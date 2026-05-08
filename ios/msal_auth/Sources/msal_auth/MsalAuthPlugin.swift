@@ -1,15 +1,52 @@
-import Cocoa
-import FlutterMacOS
+import Flutter
 import MSAL
+import UIKit
 
-public class MsalAuthPlugin: NSObject, FlutterPlugin {
+/// This is the main entry point for the Flutter plugin.
+/// It manages the method calls from Flutter & sets results accordingly.
+public class MsalAuthPlugin: NSObject, FlutterPlugin, FlutterSceneLifeCycleDelegate {
+
+    /// Initializes method channel and register method call delegate.
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
-            name: "msal_auth", binaryMessenger: registrar.messenger)
+            name: "msal_auth", binaryMessenger: registrar.messenger())
         let instance = MsalAuthPlugin()
         registrar.addMethodCallDelegate(instance, channel: channel)
+
+        // Register AppDelegate to handle URL callback.
+        registrar.addApplicationDelegate(instance)
+
+        // Register SceneDelegate to handle URL callback.
+        registrar.addSceneDelegate(instance)
     }
 
+    /// Handles the URL callback from the browser / third party app.
+    /// Used when iOS app uses `AppDelegate`.
+    public func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    ) -> Bool {
+        return MSALPublicClientApplication.handleMSALResponse(
+            url,
+            sourceApplication: options[UIApplication.OpenURLOptionsKey.sourceApplication] as? String
+        )
+    }
+
+    /// Handles the URL callback from the browser / third party app.
+    /// Used when iOS app uses `SceneDelegate`.
+    public func scene(
+    _ scene: UIScene,
+    openURLContexts URLContexts: Set<UIOpenURLContext>
+    ) -> Bool {
+        guard let url = URLContexts.first?.url else { return false }
+        return MSALPublicClientApplication.handleMSALResponse(
+            url,
+            sourceApplication: URLContexts.first?.options.sourceApplication
+        )
+    }
+
+    /// Handles method calls received from Dart.
     public func handle(
         _ call: FlutterMethodCall, result: @escaping FlutterResult
     ) {
@@ -23,17 +60,19 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
                     }
                 }(),
                 let clientId = dict["clientId"] as? String,
-                    let authorityType: AuthorityType = {
-                        switch dict["authorityType"] as? String {
-                        case "b2c": return .b2c
-                        default: return .aad
-                        }
-                    }()
+                let broker = dict["broker"] as? String,
+                let authorityType: AuthorityType = {
+                    switch dict["authorityType"] as? String {
+                    case "b2c": return .b2c
+                    default: return .aad
+                    }
+                }()
             else {
                 setInternalError(methodName: call.method, result: result)
                 return
             }
 
+            MsalAuth.broker = broker
             MsalAuth.authorityType = authorityType
             let authority = dict["authority"] as? String
 
@@ -63,11 +102,13 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
 
             let loginHint = dict["loginHint"] as? String
             let authority = dict["authority"] as? String
+            
             let customWebViewConfig = dict["customWebViewConfig"] as? [String: Any]
 
             acquireToken(
                 scopes: scopes, promptType: promptType, loginHint: loginHint, authority: authority,
-                customWebViewConfig: customWebViewConfig, result: result)
+                customWebViewConfig: customWebViewConfig,
+                result: result)
         case "acquireTokenSilent":
             guard let dict = call.arguments as? NSDictionary,
                 let scopes = dict["scopes"] as? [String]
@@ -102,7 +143,7 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
                 return
             }
             removeAccount(identifier: identifier, result: result)
-
+            
         case "isSharedDevice": isSharedDevice(result: result)
 
         default: result(FlutterMethodNotImplemented)
@@ -122,6 +163,15 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
         authorityType: AuthorityType,
         result: @escaping FlutterResult
     ) {
+        // Sets broker availability. this is required to avoid error on PCA creation
+        // when 'LSApplicationQueriesSchemes' is not defined in 'Info.plist'.
+        switch MsalAuth.broker {
+        case "webView", "safariBrowser":
+            MSALGlobalConfig.brokerAvailability = .none
+        default:
+            MSALGlobalConfig.brokerAvailability = .auto
+        }
+        
         var pcaConfig: MSALPublicClientApplicationConfig!
 
         if authority != nil {
@@ -178,39 +228,46 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
     ///   - promptType: Prompt type.
     ///   - loginHint: Login hint.
     ///   - authority: Authority URL to override default authority.
-    ///   - customWebViewConfig: Custom webview configuration.
     ///   - result: Result of the method call.
     private func acquireToken(
         scopes: [String], promptType: MSALPromptType, loginHint: String?, authority: String?,
-        customWebViewConfig: [String: Any]?, result: @escaping FlutterResult
+        customWebViewConfig: [String: Any]?,
+        result: @escaping FlutterResult
     ) {
         guard let pca = MsalAuth.publicClientApplication else {
             setPcaInitError(methodName: "acquireToken", result: result)
             return
         }
-        
-        guard let mainWindow = NSApplication.shared.mainWindow,
-              let viewController = mainWindow.contentViewController else {
+
+        guard let viewController = UIViewController.keyViewController else {
             result(
                 FlutterError(
                     code: "UI_UNAVAILABLE",
-                    message: "Cannot present authentication UI. The view controller is not available.",
+                    message: "Cannot present authentication UI. The view controller is not available. This may occur during app launch transitions. Retry with putting a delay of 500 ms.",
                     details: nil))
             return
         }
+        let webViewParameters = MSALWebviewParameters(
+            authPresentationViewController: viewController)
 
-        let webViewParameters = MSALWebviewParameters(authPresentationViewController: viewController)
-        webViewParameters.prefersEphemeralWebBrowserSession = true
-
-        // Use custom webview if configuration is provided
-        if let customWebViewConfig {
-            let customWebviewController = CustomWebviewController()
-            customWebviewController.title = customWebViewConfig["title"] as? String
-            viewController.presentAsModalWindow(customWebviewController)
-            
-            // Use the custom webview for MSAL
-            webViewParameters.webviewType = .wkWebView
-            webViewParameters.customWebview = customWebviewController.getWebView()
+        if #available(iOS 13.0, *) {
+            webViewParameters.prefersEphemeralWebBrowserSession = true
+            switch MsalAuth.broker {
+            case "webView":
+                webViewParameters.webviewType = .wkWebView
+                
+                if let customWebViewConfig {
+                    let customWebviewController = CustomWebviewController(config: customWebViewConfig)
+                    customWebviewController.modalPresentationStyle = .fullScreen
+                    viewController.present(customWebviewController, animated: true, completion: nil)
+                    
+                    webViewParameters.customWebview = customWebviewController.getWebView()
+                }
+            case "safariBrowser":
+                webViewParameters.webviewType = .safariViewController
+            default:
+                webViewParameters.webviewType = .default
+            }
         }
 
         let tokenParams = MSALInteractiveTokenParameters(
@@ -228,7 +285,7 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
                 return
             }
         }
-
+        
         pca.acquireToken(
             with: tokenParams,
             completionBlock: { (msalresult, error) in
@@ -260,82 +317,55 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
             return
         }
 
-        var account: MSALAccount!
-
         if MsalAuth.pcaType == PublicClientApplicationType.single {
-            account = getCurrentAccount()
-        } else {
-            account = getAccount(identifier: identifier!)
+            getCurrentAccount { currentAccount in
+                guard let currentAccount else {
+                    self.setNoCurrentAccountError(result: result)
+                    return
+                }
+                self.executeSilentRequest(pca: pca, account: currentAccount, scopes: scopes, authority: authority, result: result)
+            }
+            return
         }
-
-        guard let account else {
+        
+        guard let account = getAccount(identifier: identifier!) else {
             setNoCurrentAccountError(result: result)
             return
         }
-
-        let silentParams = MSALSilentTokenParameters(
-            scopes: scopes, account: account)
         
-        if let authority = authority {
-            do {
-                let msalAuthority = try getMsalAuthority(authority: authority)
-                silentParams.authority = msalAuthority
-            } catch let error as NSError {
-                setMsalError(error: error, result: result)
-                return
-            }
-        }
-
-        pca.acquireTokenSilent(
-            with: silentParams,
-            completionBlock: { (msalResult, error) in
-
-                guard let msalResult = msalResult else {
-
-                    guard let error = error as NSError? else { return }
-
-                    self.setMsalError(error: error, result: result)
-
-                    return
-                }
-
-                result(self.getAuthResult(msalResult))
-            })
+        executeSilentRequest(pca: pca, account: account, scopes: scopes, authority: authority, result: result)
     }
 
     /// Returns current account. used with single account mode.
-    /// - Parameter result: Result of the method call.
-    @discardableResult
-    private func getCurrentAccount(result: FlutterResult? = nil) -> MSALAccount?
-    {
+    private func getCurrentAccount(
+        result: FlutterResult? = nil,
+        completion: ((MSALAccount?) -> Void)? = nil
+    ) {
         guard let pca = MsalAuth.publicClientApplication else {
-            if result != nil {
-                setPcaInitError(
-                    methodName: "getCurrentAccount", result: result!)
+            if let result {
+                setPcaInitError(methodName: "getCurrentAccount", result: result)
             }
-            return nil
+            completion?(nil)
+            return
         }
-
-        var account: MSALAccount!
 
         pca.getCurrentAccount(with: MSALParameters()) {
             current, previous, error in
             if let current {
-                account = current
                 result?(self.getCurrentAccountDic(current))
+                completion?(current)
                 return
             }
 
             if let result {
                 if let error = error as NSError? {
                     self.setMsalError(error: error, result: result)
-                    return
+                } else {
+                    self.setNoCurrentAccountError(result: result)
                 }
-
-                self.setNoCurrentAccountError(result: result)
             }
+            completion?(nil)
         }
-        return account
     }
 
     /// Signs out from public client application. used with single account mode.
@@ -345,8 +375,13 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
             setPcaInitError(methodName: "signOut", result: result)
             return
         }
-
-        if let currentAccount = getCurrentAccount() {
+        
+        getCurrentAccount { currentAccount in
+            guard let currentAccount else {
+                self.setNoCurrentAccountError(result: result)
+                return
+            }
+            
             pca.signout(
                 with: currentAccount, signoutParameters: MSALSignoutParameters()
             ) { success, error in
@@ -359,8 +394,6 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
                     self.setMsalError(error: error, result: result)
                 }
             }
-        } else {
-            setNoCurrentAccountError(result: result)
         }
     }
 
@@ -406,7 +439,7 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
     }
 
     /// Removes account from public client application. used with multiple account mode.
-    /// - Parameters:
+    /// - Parameters: 
     ///   - identifier: Account identifier.
     ///   - result: Result of the method call.
     private func removeAccount(
@@ -426,7 +459,7 @@ public class MsalAuthPlugin: NSObject, FlutterPlugin {
             setMsalError(error: error, result: result)
         }
     }
-
+    
     private func isSharedDevice(result: @escaping FlutterResult) {
         guard let pca = MsalAuth.publicClientApplication else {
             setPcaInitError(methodName: "isSharedDevice", result: result)
@@ -450,6 +483,41 @@ extension MsalAuthPlugin {
             return try MSALB2CAuthority(url: URL(string: authority)!)
         default:
             return try MSALAuthority(url: URL(string: authority)!)
+        }
+    }
+    
+    /// Performs a silent token request with the given account.
+    /// - Parameters:
+    ///   - pca: Public client application.
+    ///   - account: Account to acquire token for.
+    ///   - scopes: Scopes to be requested.
+    ///   - authority: Authority URL to override cached account's authority.
+    ///   - result: Result of the method call.
+    fileprivate func executeSilentRequest(
+        pca: MSALPublicClientApplication,
+        account: MSALAccount,
+        scopes: [String],
+        authority: String?,
+        result: @escaping FlutterResult
+    ) {
+        let silentParams = MSALSilentTokenParameters(scopes: scopes, account: account)
+
+        if let authority {
+            do {
+                silentParams.authority = try getMsalAuthority(authority: authority)
+            } catch let error as NSError {
+                setMsalError(error: error, result: result)
+                return
+            }
+        }
+
+        pca.acquireTokenSilent(with: silentParams) { msalResult, error in
+            guard let msalResult else {
+                guard let error = error as NSError? else { return }
+                self.setMsalError(error: error, result: result)
+                return
+            }
+            result(self.getAuthResult(msalResult))
         }
     }
     
@@ -498,8 +566,7 @@ extension MsalAuthPlugin {
         result(
             FlutterError(
                 code: "INVALID_DATA",
-                message:
-                    "Invalid data has been provided on method \(methodName).",
+                message: "Invalid data has been provided on method \(methodName).",
                 details: nil))
     }
 
@@ -579,5 +646,22 @@ extension MsalAuthPlugin {
             FlutterError(
                 code: flutterErrorCode, message: errorMessage as? String,
                 details: errorDetails))
+    }
+}
+
+// MARK: - UIViewController
+extension UIViewController {
+    static var keyViewController: UIViewController? {
+        if #available(iOS 15, *) {
+            return
+                (UIApplication.shared.connectedScenes.filter({
+                    $0.activationState == .foregroundActive || $0.activationState == .foregroundInactive
+                }).compactMap({ $0 as? UIWindowScene }).first?.windows.filter({
+                    $0.isKeyWindow
+                }).first?.rootViewController)
+        } else {
+            return UIApplication.shared.windows.first(where: { $0.isKeyWindow }
+            )?.rootViewController
+        }
     }
 }
