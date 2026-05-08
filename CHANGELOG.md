@@ -1,11 +1,15 @@
+## 3.5.0
+- Added support for `Swift Package Manager` on iOS and macOS. [#issue/132](https://github.com/nayanAubie/msal_auth/issues/132)
+- Fixed the native Swift `getCurrentAccount` implementation so `acquireTokenSilent` and `signOut` correctly wait for the asynchronous callback. [#issue/129](https://github.com/nayanAubie/msal_auth/issues/129)
+
 ## 3.4.1
-- Fixed an Android release build issue caused by missing ProGuard rule mappings in the Android library.
+- Fixed an Android release build issue caused by missing ProGuard rule mappings in the Android library. [#issue/135](https://github.com/nayanAubie/msal_auth/issues/135)
 
 ## 3.4.0
 - Updated native MSAL SDK versions: Android: `8.3.+` and iOS & macOS: `2.11.0`
 - Migrated Android build scripts from Groovy to Kotlin DSL.
 - Added automatic handling of `MSALPublicClientApplication.handleMSALResponse` for iOS URL callbacks via both `AppDelegate` and `SceneDelegate`, removing the need for manual integration in host apps.
-- Added a shared device mode status check method to the `PublicClientApplication` class.
+- Added a shared device mode status check method to the `PublicClientApplication` class. [#issue/126](https://github.com/nayanAubie/msal_auth/issues/126)
 
 ## 3.3.0
 - Created `AppTheme` style in the `example` app for MSAL WebView in Android. [#issue/119](https://github.com/nayanAubie/msal_auth/issues/119)
