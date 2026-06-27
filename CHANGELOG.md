@@ -1,3 +1,7 @@
+## 3.5.1
+- Fixed issue of `IllegalStateException: Reply already submitted` crash due to multiple account callback from Android to Dart. [#issue/116](https://github.com/nayanAubie/msal_auth/issues/116)
+- Added `MsalNoCurrentAccountException` in Dart to handle absence of signed-in account. [#issue/141](https://github.com/nayanAubie/msal_auth/issues/141)
+
 ## 3.5.0
 - Added support for `Swift Package Manager` on iOS and macOS. [#issue/132](https://github.com/nayanAubie/msal_auth/issues/132)
 - Fixed the native Swift `getCurrentAccount` implementation so `acquireTokenSilent` and `signOut` correctly wait for the asynchronous callback. [#issue/129](https://github.com/nayanAubie/msal_auth/issues/129)

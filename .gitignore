@@ -34,3 +34,6 @@ migrate_working_dir/
 
 # Exclude files and folders from the above rules for intellij.
 !.idea/runConfigurations/
+
+# Cursor related
+.cursor/mcp.json
