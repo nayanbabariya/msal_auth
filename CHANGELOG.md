@@ -1,4 +1,4 @@
-## Unreleased
+## 3.5.2
 - Added optional `redirectUri` in `AppleConfig` for iOS/MacOS. When provided, MSAL uses it directly instead of deriving the default `msauth.<bundle-id>` redirect, which fails with `teamId is missing` on some managed devices. Keeping it `null` preserves the existing behaviour. [#issue/145](https://github.com/nayanAubie/msal_auth/issues/145)
 - `AppleConfig.broker` is now applied on MacOS as well (earlier it was iOS only). Setting it to `webView` / `safariBrowser` disables the Microsoft SSO extension and routes authentication through the web view. [#issue/145](https://github.com/nayanAubie/msal_auth/issues/145)
 
